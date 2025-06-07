@@ -9,6 +9,14 @@ from datetime import datetime
 from collections import deque
 import os
 
+from ultralytics import YOLO
+
+# Download and load the YOLOv8n model
+model = YOLO('yolov8n.pt')
+
+# Export the model to ONNX format
+model.export(format='onnx') 
+
 # --- CONFIGURATION ---
 ONNX_MODEL = "yolov8n.onnx"
 CONFIDENCE_THRESHOLD = 0.6
