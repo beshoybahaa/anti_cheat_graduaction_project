@@ -1,28 +1,20 @@
 import cv2
 import numpy as np
-import onnxruntime as ort
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
+from ultralytics import YOLO
 import time
 import csv
 from datetime import datetime
 from collections import deque
 import os
 
-from ultralytics import YOLO
-
-# Download and load the YOLOv8n model
-model = YOLO('yolov8n.pt')
-
-# Export the model to ONNX format
-model.export(format='onnx') 
-
 # --- CONFIGURATION ---
-ONNX_MODEL = "yolov8n.onnx"
+YOLO_MODEL = "yolov8n.pt"
 CONFIDENCE_THRESHOLD = 0.6
-FRAME_SIZE = 640
+FRAME_SIZE = 416
 ALARM_COOLDOWN = 10
-FRAME_SKIP = 5
+FRAME_SKIP = 4
 PRESENCE_HISTORY_SIZE = 7
 
 class_names = {0: "person", 67: "cell phone", 73: "book"}
@@ -37,41 +29,15 @@ THRESHOLD_RATIO = 0.35
 
 sessions = {}
 
-# --- LOAD ONNX MODEL ---
-ort_sess = ort.InferenceSession(ONNX_MODEL)
+# --- LOAD YOLO MODEL ---
+yolo = YOLO(YOLO_MODEL)
 
 def preprocess_frame(frame):
-    # Resize, grayscale, replicate channels, and normalize
+    # Resize, grayscale, replicate channels
     frame = cv2.resize(frame, (FRAME_SIZE, FRAME_SIZE))
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray3 = np.stack([gray]*3, axis=-1)  # YOLO expects 3-channel input
-    img = gray3.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))  # HWC to CHW
-    img = np.expand_dims(img, 0)        # Add batch dim
-    return img
-
-def postprocess(outputs, orig_shape):
-    # Outputs is a list, outputs[0] is (batch, boxes, 85)
-    predictions = outputs[0][0]  # Remove batch dim
-    # Each prediction: [x, y, w, h, conf, class0, class1, ...]
-    boxes = []
-    classes = []
-    confidences = []
-    for pred in predictions:
-        scores = pred[5:]
-        class_id = np.argmax(scores)
-        confidence = scores[class_id] * pred[4]
-        if confidence > CONFIDENCE_THRESHOLD:
-            # xywh to xyxy
-            x, y, w, h = pred[:4]
-            x1 = int((x - w/2) * orig_shape[1] / FRAME_SIZE)
-            y1 = int((y - h/2) * orig_shape[0] / FRAME_SIZE)
-            x2 = int((x + w/2) * orig_shape[1] / FRAME_SIZE)
-            y2 = int((y + h/2) * orig_shape[0] / FRAME_SIZE)
-            boxes.append([x1, y1, x2, y2])
-            classes.append(class_id)
-            confidences.append(float(confidence))
-    return np.array(boxes), np.array(classes), np.array(confidences)
+    return gray3
 
 def log_event(session_id, indicator, detection_metadata):
     ts = int(time.time())
@@ -138,14 +104,15 @@ async def detect_frame(file: UploadFile = File(...), session_id: str = Form(...)
         return JSONResponse({"error": "Invalid image"}, status_code=400)
     orig_shape = frame.shape[:2]
 
-    # --- Preprocess (resize, grayscale) ---
-    onnx_input = preprocess_frame(frame)
+    # --- Preprocess (resize, grayscale, stack 3 channels) ---
+    preprocessed = preprocess_frame(frame)
 
-    # --- Inference (ONNX) ---
-    outputs = ort_sess.run(None, {"images": onnx_input})
-
-    # --- Postprocess (boxes, classes, confs) ---
-    boxes, classes, confidences = postprocess(outputs, orig_shape)
+    # --- Inference ---
+    results = yolo(preprocessed)
+    det = results[0]
+    boxes = det.boxes.xyxy.cpu().numpy() if det.boxes.xyxy is not None else np.array([])
+    classes = det.boxes.cls.cpu().numpy() if det.boxes.cls is not None else np.array([])
+    confidences = det.boxes.conf.cpu().numpy() if det.boxes.conf is not None else np.array([])
 
     # --- Filter by class ---
     person_boxes = boxes[(classes == 0)] if len(boxes) else []

@@ -16,7 +16,7 @@ while True:
         "session_id": "abc123"
     }
     # Send to FastAPI backend
-    response = requests.post('http://20.173.96.100:8000/detect-frame/', files=files,data=data)
+    response = requests.post('http://20.42.92.80:8000/detect-frame/', files=files,data=data)
     print(response.json())
 
     # Show webcam and break with 'q'
