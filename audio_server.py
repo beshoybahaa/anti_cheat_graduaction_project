@@ -5,25 +5,22 @@ import time
 import csv
 from datetime import datetime, timezone
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
 from scipy.io import wavfile
 
 # --- Silero VAD Model ---
-print("[DEBUG] Loading Silero VAD model...")
 model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad')
 (get_speech_timestamps, _, read_audio, *_) = utils
-print("[DEBUG] Silero VAD model loaded.")
 
-# --- CONFIG (Tuned for Sensitivity & Accuracy) ---
-RATE = 16000  # Hz
-WINDOW_SECONDS = 3           # Reasonable context window
-MIN_SEGMENT_SECONDS = 0.3    # Allow short speech events
-MIN_SEGMENTS = 1             # Allow a single speech event to trigger
+# --- CONFIG (Tuned for improved detection and production) ---
+RATE = 16000
+WINDOW_SECONDS = 3
+MIN_SEGMENT_SECONDS = 0.2      # More sensitive, detects short speech
+MIN_SEGMENTS = 1
 NOTIFICATION_COOLDOWN = 10
-HUMAN_BAND = (300, 3400)     # Hz, typical phone speech band
-ENERGY_THRESHOLD = 0.3       # Lowered for more sensitivity
-MIN_RMS = 0.005              # Lowered for more sensitivity
-SILERO_THRESHOLD = 0.3       # Lowered for more sensitivity
+HUMAN_BAND = (300, 3400)
+ENERGY_THRESHOLD = 0.25        # More sensitive to quieter speech
+MIN_RMS = 0.003                # Even lower, to catch quiet voices
+SILERO_THRESHOLD = 0.2         # Silero VAD more sensitive
 
 AUDIO_LOG_DIR = "audio_logs"
 os.makedirs(AUDIO_LOG_DIR, exist_ok=True)
@@ -71,21 +68,14 @@ async def analyze_audio(
     file: UploadFile = File(...),
     session_id: str = Form("default")
 ):
-    # Read bytes and convert to np array (assume WAV/PCM16)
     contents = await file.read()
     try:
-        # Try reading as wav
         rate, audio_np = wavfile.read(file.file)
         audio_np = audio_np.astype(np.float32) / 32768.0
     except Exception:
-        # Fallback: decode raw bytes as PCM16
         audio_np = np.frombuffer(contents, dtype=np.int16).astype(np.float32) / 32768.0
         rate = RATE
 
-    # Debug: print info about received audio
-    print(f"[DEBUG] Received audio: len={len(audio_np)}, max={float(np.max(audio_np))}, min={float(np.min(audio_np))}")
-
-    # Only analyze the last WINDOW_SECONDS
     if len(audio_np) > rate * WINDOW_SECONDS:
         audio_np = audio_np[-int(rate * WINDOW_SECONDS):]
 
@@ -94,10 +84,8 @@ async def analyze_audio(
         audio_tensor, model,
         sampling_rate=rate,
         min_speech_duration_ms=int(MIN_SEGMENT_SECONDS * 1000),
-        threshold=SILERO_THRESHOLD  # Lowered for sensitivity
+        threshold=SILERO_THRESHOLD
     )
-
-    print(f"[DEBUG] Speech timestamps: {timestamps}")
 
     long_segments = []
     for ts in timestamps:
@@ -106,17 +94,12 @@ async def analyze_audio(
             seg_audio = audio_np[ts['start']:ts['end']]
             band_ratio = energy_in_band(seg_audio, rate, HUMAN_BAND)
             seg_rms = rms(seg_audio)
-            print(f"[DEBUG] Segment [{ts['start']}:{ts['end']}], "
-                  f"length={seg_len:.2f}s, band_ratio={band_ratio:.3f}, rms={seg_rms:.4f}")
             if band_ratio >= ENERGY_THRESHOLD and seg_rms > MIN_RMS:
                 long_segments.append(({
                     "start": int(ts['start']),
                     "end": int(ts['end'])
                 }, float(band_ratio), float(seg_rms)))
 
-    print(f"[DEBUG] Long segments: {long_segments}")
-
-    # Cooldown check per session
     now = time.time()
     last_notif = last_notification.get(session_id, 0)
     cheating_detected = False
@@ -150,7 +133,6 @@ async def analyze_audio(
     else:
         meta = {}
 
-    # Ensure all response fields are Python native types (never numpy types!)
     return {
         "cheating_detected": bool(cheating_detected),
         "meta": meta,
