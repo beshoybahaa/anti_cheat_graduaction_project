@@ -14,12 +14,12 @@ model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad')
 
 # --- CONFIG ---
 RATE = 16000  # Hz
-WINDOW_SECONDS = 3
-MIN_SEGMENT_SECONDS = 0.5
-MIN_SEGMENTS = 2
+WINDOW_SECONDS = 2        # More sensitive
+MIN_SEGMENT_SECONDS = 0.3 # More sensitive
+MIN_SEGMENTS = 1          # More sensitive
 NOTIFICATION_COOLDOWN = 10
 HUMAN_BAND = (300, 3400)  # Hz
-ENERGY_THRESHOLD = 0.6
+ENERGY_THRESHOLD = 0.3    # More sensitive
 AUDIO_LOG_DIR = "audio_logs"
 os.makedirs(AUDIO_LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(AUDIO_LOG_DIR, "cheating_log.csv")
@@ -34,7 +34,7 @@ def energy_in_band(audio_segment, rate, band):
     total_energy = np.sum(power)
     idx = np.logical_and(freqs >= band[0], freqs <= band[1])
     band_energy = np.sum(power[idx])
-    return band_energy / total_energy if total_energy > 0 else 0.0
+    return float(band_energy / total_energy if total_energy > 0 else 0.0)
 
 def log_event(session_id, indicator, audio_segment, detection_metadata=None):
     ts = int(time.time())
@@ -49,9 +49,9 @@ def log_event(session_id, indicator, audio_segment, detection_metadata=None):
                 "unix_timestamp", "iso_timestamp", "session_id", "indicator", 
                 "filename", "segment_start", "segment_end", "energy_ratio"
             ])
-        segment_start = detection_metadata.get("segment_start", "") if detection_metadata else ""
-        segment_end = detection_metadata.get("segment_end", "") if detection_metadata else ""
-        energy_ratio = detection_metadata.get("energy_ratio", "") if detection_metadata else ""
+        segment_start = float(detection_metadata.get("segment_start", "")) if detection_metadata and detection_metadata.get("segment_start", "") != "" else ""
+        segment_end = float(detection_metadata.get("segment_end", "")) if detection_metadata and detection_metadata.get("segment_end", "") != "" else ""
+        energy_ratio = float(detection_metadata.get("energy_ratio", "")) if detection_metadata and detection_metadata.get("energy_ratio", "") != "" else ""
         writer.writerow([
             ts, iso_timestamp, session_id, indicator, wav_filename, segment_start, segment_end, energy_ratio
         ])
@@ -65,12 +65,16 @@ async def analyze_audio(
     # Read bytes and convert to np array (assume WAV/PCM16)
     contents = await file.read()
     try:
-        rate, audio_np = wavfile.read(file.file)  # Try reading as wav
+        # Try reading as wav
+        rate, audio_np = wavfile.read(file.file)
         audio_np = audio_np.astype(np.float32) / 32768.0
     except Exception:
         # Fallback: decode raw bytes as PCM16
         audio_np = np.frombuffer(contents, dtype=np.int16).astype(np.float32) / 32768.0
         rate = RATE
+
+    # Debug: print info about received audio
+    print(f"[DEBUG] Received audio: len={len(audio_np)}, max={float(np.max(audio_np))}, min={float(np.min(audio_np))}")
 
     # Only analyze the last WINDOW_SECONDS
     if len(audio_np) > rate * WINDOW_SECONDS:
@@ -81,6 +85,8 @@ async def analyze_audio(
         audio_tensor, model, sampling_rate=rate, min_speech_duration_ms=int(MIN_SEGMENT_SECONDS * 1000)
     )
 
+    print(f"[DEBUG] Speech timestamps: {timestamps}")
+
     long_segments = []
     for ts in timestamps:
         seg_len = (ts['end'] - ts['start']) / rate
@@ -88,7 +94,13 @@ async def analyze_audio(
             seg_audio = audio_np[ts['start']:ts['end']]
             band_ratio = energy_in_band(seg_audio, rate, HUMAN_BAND)
             if band_ratio >= ENERGY_THRESHOLD:
-                long_segments.append((ts, band_ratio))
+                # Ensure all to Python native types
+                long_segments.append(({
+                    "start": int(ts['start']),
+                    "end": int(ts['end'])
+                }, float(band_ratio)))
+
+    print(f"[DEBUG] Long segments: {long_segments}")
 
     # Cooldown check per session
     now = time.time()
@@ -107,23 +119,26 @@ async def analyze_audio(
             indicator="speech_detected",
             audio_segment=audio_np,
             detection_metadata={
-                "segment_start": ts_data['start'] / rate,
-                "segment_end": ts_data['end'] / rate,
-                "energy_ratio": f"{band_ratio:.3f}"
+                "segment_start": float(ts_data['start']) / float(rate),
+                "segment_end": float(ts_data['end']) / float(rate),
+                "energy_ratio": float(band_ratio)
             }
         )
         last_notification[session_id] = now
         meta = {
-            "segment_start": ts_data['start'] / rate,
-            "segment_end": ts_data['end'] / rate,
-            "energy_ratio": band_ratio,
-            "log_file": log_name
+            "segment_start": float(ts_data['start']) / float(rate),
+            "segment_end": float(ts_data['end']) / float(rate),
+            "energy_ratio": float(band_ratio),
+            "log_file": str(log_name)
         }
+    else:
+        meta = {}
 
+    # Ensure all response fields are Python native types (never numpy types!)
     return {
-        "cheating_detected": cheating_detected,
+        "cheating_detected": bool(cheating_detected),
         "meta": meta,
-        "num_segments": len(long_segments),
+        "num_segments": int(len(long_segments)),
         "message": (
             "Sustained speech detected and logged." if cheating_detected else "No cheating detected."
         )
