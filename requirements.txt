@@ -1,8 +1,9 @@
 fastapi
 uvicorn
-websockets
-opencv-python
-numpy
-ultralytics
-mediapipe
 python-multipart
+numpy
+torch
+scipy
+face-recognition
+opencv-python
+ultralytics
