@@ -14,14 +14,17 @@ model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad')
 (get_speech_timestamps, _, read_audio, *_) = utils
 print("[DEBUG] Silero VAD model loaded.")
 
-# --- CONFIG ---
+# --- CONFIG (Tuned for Sensitivity & Accuracy) ---
 RATE = 16000  # Hz
-WINDOW_SECONDS = 3           # More accurate
-MIN_SEGMENT_SECONDS = 0.5    # More accurate
-MIN_SEGMENTS = 2             # More accurate
+WINDOW_SECONDS = 3           # Reasonable context window
+MIN_SEGMENT_SECONDS = 0.3    # Allow short speech events
+MIN_SEGMENTS = 1             # Allow a single speech event to trigger
 NOTIFICATION_COOLDOWN = 10
-HUMAN_BAND = (300, 3400)  # Hz
-ENERGY_THRESHOLD = 0.6    # More accurate
+HUMAN_BAND = (300, 3400)     # Hz, typical phone speech band
+ENERGY_THRESHOLD = 0.3       # Lowered for more sensitivity
+MIN_RMS = 0.005              # Lowered for more sensitivity
+SILERO_THRESHOLD = 0.3       # Lowered for more sensitivity
+
 AUDIO_LOG_DIR = "audio_logs"
 os.makedirs(AUDIO_LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(AUDIO_LOG_DIR, "cheating_log.csv")
@@ -40,8 +43,6 @@ def energy_in_band(audio_segment, rate, band):
 
 def rms(audio_segment):
     return float(np.sqrt(np.mean(audio_segment**2)))
-
-MIN_RMS = 0.01  # Minimum volume threshold for speech
 
 def log_event(session_id, indicator, audio_segment, detection_metadata=None):
     ts = int(time.time())
@@ -90,7 +91,10 @@ async def analyze_audio(
 
     audio_tensor = torch.from_numpy(audio_np)
     timestamps = get_speech_timestamps(
-        audio_tensor, model, sampling_rate=rate, min_speech_duration_ms=int(MIN_SEGMENT_SECONDS * 1000)
+        audio_tensor, model,
+        sampling_rate=rate,
+        min_speech_duration_ms=int(MIN_SEGMENT_SECONDS * 1000),
+        threshold=SILERO_THRESHOLD  # Lowered for sensitivity
     )
 
     print(f"[DEBUG] Speech timestamps: {timestamps}")
@@ -102,7 +106,8 @@ async def analyze_audio(
             seg_audio = audio_np[ts['start']:ts['end']]
             band_ratio = energy_in_band(seg_audio, rate, HUMAN_BAND)
             seg_rms = rms(seg_audio)
-            print(f"[DEBUG] Segment [{ts['start']}:{ts['end']}] length={seg_len:.2f}s, band_ratio={band_ratio:.2f}, rms={seg_rms:.4f}")
+            print(f"[DEBUG] Segment [{ts['start']}:{ts['end']}], "
+                  f"length={seg_len:.2f}s, band_ratio={band_ratio:.3f}, rms={seg_rms:.4f}")
             if band_ratio >= ENERGY_THRESHOLD and seg_rms > MIN_RMS:
                 long_segments.append(({
                     "start": int(ts['start']),
