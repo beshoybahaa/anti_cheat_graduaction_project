@@ -12,10 +12,10 @@ model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad')
 
 RATE = 16000
 WINDOW_SECONDS = 3
-MIN_SEGMENT_SECONDS = 0.1   # Very sensitive
+MIN_SEGMENT_SECONDS = 0.3  
 MIN_SEGMENTS = 1
 NOTIFICATION_COOLDOWN = 10
-SILERO_THRESHOLD = 0.15     # Very sensitive
+SILERO_THRESHOLD = 0.3     # Very sensitive
 
 AUDIO_LOG_DIR = "audio_logs"
 os.makedirs(AUDIO_LOG_DIR, exist_ok=True)
